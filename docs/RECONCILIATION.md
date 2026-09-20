@@ -28,16 +28,15 @@ it.
 ## Safety ordering
 
 > Safety ordering (deterministic): PROTECT unprotected risk first, CANCEL orphan orders next,
-> THEN bring positions to desired. This guarantees that no code path can leave a naked position
-> or act on a stray order before risk is contained.
+> THEN bring positions to desired.
 
-The order is fixed rather than emergent. Containing risk cannot be something that happens to
-occur first because of how a loop was written.
+This is the order of the planned actions. The reconciler performs no broker calls and cannot
+guarantee that protection or cancellation succeeds; the execution layer must handle failures.
 
 ## The discrepancy taxonomy
 
-Every difference between broker truth and desired state is classified into exactly one action
-kind before anything is sent:
+Planned actions use seven kinds. A single position can need both protection and a later
+position adjustment; these are not mutually exclusive discrepancy classes:
 
 ```python
 @dataclass(frozen=True)
@@ -77,10 +76,11 @@ def reconcile(
 ) -> list[Action]:
 ```
 
-`known_client_oids` is how an orphan is identified. Because order ids are derived from intent
-(see [ORDER-FSM.md](ORDER-FSM.md)), the system can recognise its own orders at the broker after
-a total restart, with no local state surviving at all. An open order whose id is not in that set
-was not placed by this version of the system's intent, so it is cancelled rather than adopted.
+`known_client_oids` is the set supplied by the caller to identify recognised orders. An open
+order whose client ID is absent from that set produces a `CANCEL_ORPHAN` action. Intent-derived
+IDs (see [ORDER-FSM.md](ORDER-FSM.md)) help identify retries, but they do not reconstruct the
+caller's known-ID set by themselves. Recovery therefore depends on the inputs supplied to
+reconciliation; it is not a guarantee of recovery after total loss of local state.
 
 ## Position
 

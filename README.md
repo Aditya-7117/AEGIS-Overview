@@ -1,20 +1,20 @@
-# AEGIS — Adaptive Execution & Global Intelligence System
+# AEGIS: Adaptive Execution & Global Intelligence System
 
-**Automated trading system for crypto derivatives, built test-first and run unattended, from research through to live order execution.**
+**Crypto derivatives system with research, backtesting and execution components. Built test-first and currently paper trading.**
 
-> **This is a portfolio overview repository.** AEGIS is a private, production trading system. Its source code, strategy logic, and configuration are not published here or anywhere public. This repository exists to document the engineering — architecture, reliability design, and the problems solved — not the trading methodology.
+> **This is a portfolio overview repository.** AEGIS is a private trading system, currently operating in paper mode. Its source code, strategy logic, and configuration are not published here or anywhere public. This repository documents the architecture, reliability design and engineering problems solved. Trading methodology remains private.
 
 ---
 
 ## Project Overview
 
-AEGIS is a single-operator, single-process trading system that takes a strategy from historical research through backtesting to live order execution against a crypto derivatives exchange, running unattended on a home machine. It was built test-first, with correctness treated as a hard requirement rather than an aspiration — the system manages real capital, and a silent bug has direct financial consequences.
+AEGIS is a single-operator, single-process crypto derivatives system with components for historical research, backtesting and exchange execution. It runs unattended in paper mode on a home machine. Its test-first development focuses on order state, recovery and protective controls.
 
-The public engineering story here is deliberately about the *how*, not the *what*: how do you build software that is allowed to place real orders with no human watching, and trust it not to duplicate an order, lose one, or leave a position unprotected — ever?
+The engineering documented here covers duplicate submission, unknown order outcomes, stale decisions after downtime and missing protective orders. These are failure cases the design addresses, not claims that a live system cannot fail.
 
 ## Motivation
 
-Most portfolio trading projects stop at the backtest. AEGIS was built to answer a harder question: what does it take for an automated system to be safely left running unattended, for weeks, against a live exchange, with real money at risk? That constraint — not the trading idea itself — is what drove almost every architectural decision in this repository: the single-writer order queue, the finite-state machine, the reconciliation layer, the alerting design.
+The execution design prepares for unattended operation: one writer owns order submission, an explicit state machine tracks outcomes, reconciliation compares broker truth with current targets, and alerts require acknowledgement. Paper operation exercises these paths before live capital is introduced.
 
 ## High-Level Architecture
 
@@ -24,7 +24,7 @@ flowchart TB
         MD["Market Data Ingestion"]
     end
 
-    subgraph strategy["Strategy Layer (proprietary — not detailed here)"]
+    subgraph strategy["Strategy Layer (proprietary, not detailed here)"]
         SIG["Signal / Decision Engine"]
     end
 
@@ -34,12 +34,12 @@ flowchart TB
     end
 
     subgraph reliability["Reliability Layer"]
-        REC["Startup Reconciliation\n(broker truth vs. internal ledger)"]
+        REC["Reconciliation\n(broker truth vs. fresh targets)"]
         ALT["Tiered Alerting\n(persistent, dedup'd)"]
     end
 
     subgraph store["Persistence"]
-        DB[("SQLite — WAL mode\nwrite-ahead order journal")]
+        DB[("SQLite, WAL mode\nwrite-ahead order journal")]
     end
 
     subgraph iface["Interface"]
@@ -63,19 +63,19 @@ flowchart TB
 
 ## Engineering Challenges
 
-- **Zero-tolerance order safety on an unattended machine.** No duplicate orders after a crash, no order silently dropped, no position ever left without its protective stop — solved with a finite-state machine, deterministic idempotency keys, and write-ahead journaling rather than retries-and-hope.
-- **Recovering from arbitrary downtime without confusion.** On restart after five minutes or five days, the system has to reconstruct truth from the exchange itself, correctly tell "the owner manually intervened" apart from "the system's own state has drifted," and never replay a stale trading decision against a market that has since moved on.
+- **Order safety on an unattended machine.** An explicit state machine, intent-derived order IDs and write-ahead logging track submissions and distinguish a known rejection from an unknown outcome. Recovery queries the broker before retrying an uncertain order.
+- **Reconciliation after downtime.** The system compares broker positions and open orders with freshly calculated target positions. It plans protection for uncovered risk first, cancellation of orphan orders next, then position changes. A separate classifier distinguishes manual intervention from drift.
 - **True real-time state with zero client polling.** A FastAPI + native WebSocket layer pushes state deltas to the browser the instant they happen, serving both the API and the compiled frontend from one process.
-- **Deploying the same system unmodified on Windows and macOS**, with no Node.js required on the trading machine and no database server to administer — a single portable SQLite file and a pre-built static frontend.
-- **Making failure loud instead of silent.** A severity-tiered alerting system that persists across restarts, requires explicit human acknowledgment, and de-duplicates so a real problem is never lost in noise — and never silently auto-clears.
+- **Deploying the same system unmodified on Windows and macOS**, with no Node.js required on the trading machine and no database server to administer: it uses a portable SQLite file and a pre-built static frontend.
+- **Making failure loud instead of silent.** A severity-tiered alerting system that persists across restarts, requires explicit human acknowledgment, and de-duplicates so repeated alerts are grouped and persistent alerts require an explicit acknowledgement.
 
 ## By the numbers
 
 | Metric | Value |
 |---|---|
 | Codebase | 115 Python files, about 12,650 lines |
-| Automated tests | 251 test functions across 37 modules, written test-first module by module |
-| Test structure | One test module per source module, no parametrised expansion and no test classes, so the count is a count of distinct cases |
+| Automated tests | 300 test functions across 36 test modules, written test-first module by module |
+| Test count method | Static count of 251 synchronous and 49 asynchronous test functions in 36 test modules; no pytest collection or execution performed for this overview |
 | Build cadence | 87 commits |
 | Order model | A ten-state finite state machine with an explicit transition table; illegal transitions raise |
 | Durability | SQLite in write-ahead-logging mode, and a dual-entry, append-only, hash-chained audit ledger |
@@ -114,17 +114,16 @@ fights the human or ignores a real failure. Both are worse than asking the quest
 | Document | What is in it |
 |---|---|
 | [docs/ORDER-FSM.md](docs/ORDER-FSM.md) | The ten states, the transition table, why FAILED and REJECTED must never be merged, how the idempotency key is derived from intent, and the decision function in full |
-| [docs/RECONCILIATION.md](docs/RECONCILIATION.md) | Recovery after arbitrary downtime: recomputing desired state rather than replaying stale intents, the fixed safety ordering, and the seven-way discrepancy taxonomy |
+| [docs/RECONCILIATION.md](docs/RECONCILIATION.md) | Reconciliation after downtime: recomputing desired state rather than replaying stale intents, the fixed safety ordering, and the seven-way discrepancy taxonomy |
 | [DISCLOSURE.md](DISCLOSURE.md) | What is published here, what never will be, and the line between them |
 
 ## Test suite
 
-251 test functions across 37 modules. The suite has one test module per source module, which is
-a consequence of how it was built: the tests for a module were written before the module.
+300 test functions across 36 test modules, developed test-first, module by module.
 
-There are no parametrised cases and no test classes anywhere in the suite, so 251 is a count of
-distinct test functions rather than an inflated figure. Anyone can verify that by grepping the
-suite.
+The 300 figure counts 251 synchronous and 49 asynchronous test functions across 36 test
+modules. The test tree also contains `conftest.py`, a support module. It is not a report of
+pytest collection or a fresh test run.
 
 The modules that carry the most weight:
 
@@ -150,15 +149,15 @@ here.
 
 ## Technology Stack
 
-**Backend** — Python 3.11+ (asyncio), FastAPI, native WebSocket, APScheduler, SQLite (WAL mode)
-**Frontend** — React 19, TypeScript, TanStack Router, Tailwind CSS, Radix UI, Recharts
-**Data / Research tooling** — pandas, numpy, pyarrow
-**Testing** — pytest, pytest-asyncio — 251 test functions across 37 modules, written test-first module by module
-**Deployment** — single supervised process, no containers, no message broker, cross-platform (Windows/macOS) native launchers
+**Backend:** Python 3.11+ (asyncio), FastAPI, native WebSocket, APScheduler, SQLite (WAL mode)
+**Frontend:** React 19, TypeScript, TanStack Router, Tailwind CSS, Radix UI, Recharts
+**Data / Research tooling:** pandas, numpy, pyarrow
+**Testing:** pytest, pytest-asyncio, 300 test functions across 36 test modules, written test-first module by module
+**Deployment:** single supervised process, no containers, no message broker, cross-platform (Windows/macOS) native launchers
 
 ## Screenshots
 
-*(To be added — see the screenshot capture guide before publishing any images: paper-mode only, no real account figures, no code views of the strategy modules.)*
+*(To be added. See the screenshot capture guide before publishing any images: paper-mode only, no real account figures, no code views of the strategy modules.)*
 
 - Dashboard overview (layout and design)
 - Real-time system status / connectivity panel
