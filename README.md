@@ -3,6 +3,9 @@
 **Crypto derivatives system with research, backtesting and execution components. Built test-first and currently paper trading.**
 
 > **This is a portfolio overview repository.** AEGIS is a private trading system, currently operating in paper mode. Its source code, strategy logic, and configuration are not published here or anywhere public. This repository documents the architecture, reliability design and engineering problems solved. Trading methodology remains private.
+>
+> Six of its infrastructure modules also run here: [`extract/`](extract/) holds them with 69 of
+> their tests, run by CI on every push.
 
 ---
 
@@ -64,18 +67,20 @@ flowchart TB
 ## Engineering Challenges
 
 - **Order safety on an unattended machine.** An explicit state machine, intent-derived order IDs and write-ahead logging track submissions and distinguish a known rejection from an unknown outcome. Recovery queries the broker before retrying an uncertain order.
-- **Reconciliation after downtime.** The system compares broker positions and open orders with freshly calculated target positions. It plans protection for uncovered risk first, cancellation of orphan orders next, then position changes. A separate classifier distinguishes manual intervention from drift.
+- **Reconciliation after downtime.** In live mode, startup reads the broker's positions and open orders and raises a critical alarm if the read fails. It then compares the broker's book with the system's own open trades: a classifier separates a deliberate manual exit from an anomaly, and the reconciler logs every position without a protective stop as critical. The reconciler can also plan a full recovery against fresh targets (protection first, orphan orders next, position changes last); at the latest commit startup uses it to find unprotected risk. Details in [docs/RECONCILIATION.md](docs/RECONCILIATION.md).
+- **Risk decisions that refuse to act on bad data.** In live mode one pure function decides, at the start of every bar, whether new risk is allowed. A failed broker read suspends new risk but never flattens, because flattening on numbers you cannot trust is a risk of its own. Only a confirmed drawdown or daily-loss breach fires the kill switch. A position that differs from the venue's, or margin use above its ceiling, blocks new orders without flattening. Details in [docs/LIVE-RISK.md](docs/LIVE-RISK.md).
+- **Books that check themselves.** Paper fills post their fees and realised profit or loss, funding payments post as cash flows, and live fills book their fees, all into a double-entry ledger. Amounts are decimals stored as strings, never floats. An entry that does not balance to exactly zero is refused, each entry carries the hash of the one before it, and mistakes are fixed by reversal, never by editing. A daily job re-verifies the chain and the trial balance of both books. Details in [docs/AUDIT-LEDGER.md](docs/AUDIT-LEDGER.md).
 - **True real-time state with zero client polling.** A FastAPI + native WebSocket layer pushes state deltas to the browser the instant they happen, serving both the API and the compiled frontend from one process.
 - **Deploying the same system unmodified on Windows and macOS**, with no Node.js required on the trading machine and no database server to administer: it uses a portable SQLite file and a pre-built static frontend.
-- **Making failure loud instead of silent.** A severity-tiered alerting system that persists across restarts, requires explicit human acknowledgment, and de-duplicates so repeated alerts are grouped and persistent alerts require an explicit acknowledgement.
+- **Making failure loud instead of silent.** A severity-tiered alert queue that survives restarts, keeps every alert until a human acknowledges it, and suppresses repeat e-mails for the same alert.
 
 ## By the numbers
 
 | Metric | Value |
 |---|---|
 | Codebase | 115 Python files, about 12,650 lines |
-| Automated tests | 300 test functions across 36 test modules, written test-first module by module |
-| Test count method | Static count of 251 synchronous and 49 asynchronous test functions in 36 test modules; no pytest collection or execution performed for this overview |
+| Automated tests | 300 test functions across 36 test modules, written test-first module by module; 69 of them run in this repository's CI |
+| Test count method | Static count of 251 synchronous and 49 asynchronous test functions in 36 test modules at the latest commit (25 August 2026). The private suite was not run for this overview; the 69 extracted tests run here on every push |
 | Build cadence | 87 commits |
 | Order model | A ten-state finite state machine with an explicit transition table; illegal transitions raise |
 | Durability | SQLite in write-ahead-logging mode, and a dual-entry, append-only, hash-chained audit ledger |
@@ -84,6 +89,25 @@ flowchart TB
 
 *Statistics describe engineering scope only. No performance figures are published here or
 anywhere else, including from paper trading.*
+
+## Run it yourself
+
+[`extract/`](extract/) holds six modules copied from the private repository with 69 of their tests:
+the order state machine, the reconciler, the manual-intervention classifier, the live risk
+decisions, the audit ledger and the durable state store. Each file names the private path and
+commit it came from and lists every edit. Most edits are import paths, placeholder instrument
+names, the exchange's name and comment punctuation. Two are worth stating plainly: the risk limits
+in the tests and the reconciler's default band are illustrative values, not the live
+configuration, and the exchange-specific fill import and the performance bookkeeping tables are
+left out.
+
+```bash
+cd extract
+python -m pip install -e ".[test]"
+python -m pytest
+```
+
+69 tests, standard library only. GitHub Actions runs them on Python 3.10 to 3.13 on every push.
 
 ## Four independent protection layers
 
@@ -99,10 +123,12 @@ survives the failure of the one above it.
    fired is a hypothesis rather than a control.
 3. **A venue-side dead-man switch.** The exchange itself cancels resting orders if the system
    stops sending its heartbeat. This one keeps working when the process is gone, which is
-   exactly when the first two cannot help.
+   exactly when the first two cannot help. It is built and tested, and switched off in the
+   current paper configuration; it is meant to be switched on for testnet and live trading.
 4. **An external dead-man monitor.** A monitor off this machine expects a ping on a schedule.
    If the pings stop, the machine, its network or its power has failed, and something outside
-   the blast radius knows about it.
+   the blast radius knows about it. It is built and tested too, and stays off until an outside
+   monitoring service is set up.
 
 A related piece worth calling out is the manual-intervention classifier. It is a pure function
 that distinguishes a human deciding to force-exit a position from the system malfunctioning.
@@ -113,8 +139,11 @@ fights the human or ignores a real failure. Both are worse than asking the quest
 
 | Document | What is in it |
 |---|---|
-| [docs/ORDER-FSM.md](docs/ORDER-FSM.md) | The ten states, the transition table, why FAILED and REJECTED must never be merged, how the idempotency key is derived from intent, and the decision function in full |
-| [docs/RECONCILIATION.md](docs/RECONCILIATION.md) | Reconciliation after downtime: recomputing desired state rather than replaying stale intents, the fixed safety ordering, and the seven-way discrepancy taxonomy |
+| [docs/ORDER-FSM.md](docs/ORDER-FSM.md) | The ten states, the transition table, why FAILED and REJECTED must never be merged, how the idempotency key is derived from intent, the decision function in full, and how the router drives it |
+| [docs/RECONCILIATION.md](docs/RECONCILIATION.md) | Reconciliation after downtime: recomputing desired state rather than replaying stale intents, the fixed safety ordering, the seven-way discrepancy taxonomy, and how much of it the running system uses today |
+| [docs/LIVE-RISK.md](docs/LIVE-RISK.md) | The kill switch and risk guards: the decision order, why a bad read never flattens, the latched halt and the single-order size check |
+| [docs/AUDIT-LEDGER.md](docs/AUDIT-LEDGER.md) | The double-entry ledger: balancing, decimal amounts, the hash chain, reversals, the daily integrity check and its limits |
+| [extract/README.md](extract/README.md) | The six runnable modules, where each came from and exactly what was changed |
 | [DISCLOSURE.md](DISCLOSURE.md) | What is published here, what never will be, and the line between them |
 
 ## Test suite
@@ -123,22 +152,23 @@ fights the human or ignores a real failure. Both are worse than asking the quest
 
 The 300 figure counts 251 synchronous and 49 asynchronous test functions across 36 test
 modules. The test tree also contains `conftest.py`, a support module. It is not a report of
-pytest collection or a fresh test run.
+pytest collection or a fresh test run. Six of these modules run in this repository with 69 of
+their tests: see [Run it yourself](#run-it-yourself).
 
 The modules that carry the most weight:
 
 | Module | Covers |
 |---|---|
-| `tests/test_order_fsm.py` | The state machine: legal transitions, illegal ones raising, and every branch of the decision function, all without a broker because the module is pure |
-| `tests/test_reconcile.py` | Recovery. Held against wanted, across every discrepancy kind, including unprotected positions and orphan orders |
-| `tests/test_state_store.py` | The durable spine: crash safety and recovery of persisted state |
-| `tests/test_ledger.py` | The append-only, hash-chained accounting ledger |
-| `tests/test_live_risk.py` | The kill switch and the risk guards, as pure decision functions |
+| `tests/test_order_fsm.py` | The state machine: legal transitions, illegal ones raising, and every branch of the decision function, all without a broker because the module is pure (in `extract/`) |
+| `tests/test_reconcile.py` | Recovery. Held against wanted, across every discrepancy kind, including unprotected positions and orphan orders (in `extract/`) |
+| `tests/test_state_store.py` | The durable spine: the live-armed flag surviving a restart, its audit trail, write-ahead-logging mode and state that persists across processes (in `extract/`) |
+| `tests/test_ledger.py` | The append-only, hash-chained accounting ledger (in `extract/`) |
+| `tests/test_live_risk.py` | The kill switch and the risk guards, as pure decision functions (in `extract/`) |
 | `tests/test_kill.py` | Cancelling every open order and flattening every position |
 | `tests/test_deadman.py` | The venue-side dead-man switch |
 | `tests/test_external_heartbeat.py` | The off-machine monitor |
 | `tests/test_preflight.py` | That arming live is refused unless every binary check passes |
-| `tests/test_intervention.py` | Telling a deliberate manual exit apart from a system fault |
+| `tests/test_intervention.py` | Telling a deliberate manual exit apart from a system fault (in `extract/`) |
 | `tests/test_execution.py` | The router driving the state machine against a broker gateway |
 | `tests/test_broker_signing.py` | Request signing against the venue API |
 | `tests/test_recovery_supervisor.py` | Restart behaviour under supervision |
@@ -155,17 +185,13 @@ here.
 **Testing:** pytest, pytest-asyncio, 300 test functions across 36 test modules, written test-first module by module
 **Deployment:** single supervised process, no containers, no message broker, cross-platform (Windows/macOS) native launchers
 
-## Screenshots
-
-*(To be added. See the screenshot capture guide before publishing any images: paper-mode only, no real account figures, no code views of the strategy modules.)*
-
-- Dashboard overview (layout and design)
-- Real-time system status / connectivity panel
-- Test suite run summary
-- Architecture diagram (this page)
-
 ## Future Work
 
+- Live profit-and-loss attribution in the audit ledger. Live fills book their fees today;
+  attributing realised profit to each live fill needs a persistent live cost-basis tracker,
+  which is not built yet
+- Sending the startup `PROTECT` actions to the order router automatically. Today they are
+  logged as critical for the operator
 - Additional broker/exchange integrations behind the same execution core
 - Expanded automated observability (metrics, structured tracing) around the existing alerting layer
 - Further deployment automation for multi-machine redundancy

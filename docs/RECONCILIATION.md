@@ -21,9 +21,8 @@ Quoted from the module docstring:
 This is the important part. A system that recovers by replaying a queue of intents it had saved
 earlier will act on decisions that were made against a market that no longer exists. Recomputing
 desired state from current data means there is no queue to replay and nothing stale to act on.
-Recovery and normal operation then run the same code path, so the recovery path is exercised on
-every single bar rather than only after a crash, which is when nobody wants to discover a bug in
-it.
+That is the design the module implements and its tests pin down. How much of it the running
+system calls today is set out in [How it is wired today](#how-it-is-wired-today).
 
 ## Safety ordering
 
@@ -62,7 +61,8 @@ startup, the answer is in the action rather than reconstructed from logs.
 
 `HOLD` matters more than it looks. Without a tolerance band, a position that is fractionally off
 target generates an order on every bar, and the strategy pays costs forever to correct rounding.
-The band's value is a tuned parameter and is not published here.
+The band's value is a tuned parameter and is not published here. The runnable copy in
+[`extract/`](../extract/) uses an illustrative 0.30 so its tests can run.
 
 ## The inputs
 
@@ -96,3 +96,34 @@ class Position:
 stop attached. The frozen dataclass is deliberate: reconciliation inputs are a snapshot of
 truth, and code that could mutate them mid-decision would be able to reconcile against a
 position that changed underneath it.
+
+## How it is wired today
+
+At the latest commit (25 August 2026) the reconciler is called in one place: `recover()`, which
+runs at startup. Paper mode has no exchange to reconcile with, so there `recover()` only reloads
+the protective stops of open trades. In live mode it:
+
+1. Reads the broker's positions and open orders. If the read fails, it raises a critical
+   `RECOVER_FAILED` alarm and goes no further.
+2. Builds the expected book from the system's own open-trade records.
+3. Runs the intervention classifier (`aegis/intervention.py`) over the difference. A position
+   that shrank with no order of ours is tagged as a manual exit at INFO severity. One that grew,
+   flipped, appeared from nowhere or lost its stop raises a critical alarm.
+4. Runs the reconciler with an empty target, which turns every position without a broker-side
+   stop into a `PROTECT` action. Those are logged as critical for the operator; the code does not
+   yet send them to the order router.
+
+During trading, live positions are compared with the venue's once per bar by a separate
+check, `reconcile_breaks()`, and any difference halts new risk (see
+[LIVE-RISK.md](LIVE-RISK.md)). The full planning mode, with fresh targets and the order
+journal's known IDs feeding orphan cancellation, is implemented and tested but is not yet called
+on every bar.
+
+## Tests
+
+The 12 reconciler tests run in [`extract/tests/test_reconcile.py`](../extract/tests/test_reconcile.py):
+holding, exiting, entering and reversing; adjusting outside the band and holding inside it;
+protecting an unprotected position before exiting or holding it; cancelling an orphan order and
+keeping a known one; the flat no-op; and the fixed order of protection, cancellation and position
+changes. The 10 intervention-classifier tests run alongside them in
+[`extract/tests/test_intervention.py`](../extract/tests/test_intervention.py).

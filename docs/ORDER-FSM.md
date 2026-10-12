@@ -71,8 +71,8 @@ stateDiagram-v2
 ```
 
 `RECONCILE_NOT_FOUND` returning to `PENDING_NEW` is the recovery path. If the broker has never
-heard of the order, it is safe to treat the intent as unsent and place it again, because the id
-is derived from the intent and a duplicate would be recognised.
+heard of the order, it is safe to treat the intent as unsent and place it again, and the retry
+carries the same intent-derived id.
 
 ## The idempotency key
 
@@ -87,7 +87,7 @@ def make_client_oid(bar_iso: str, sleeve: str, symbol: str, side: str, seq: int 
 The key is derived, not generated. A random id would defeat the entire mechanism, because a
 retry after a crash would arrive with a new id and the broker would have no way to know it had
 seen the order before. Deriving it from the intent means the same decision always produces the
-same id, so the broker itself becomes the deduplicator.
+same id, so after a crash or a transport error the system can ask the broker about that exact id.
 
 The length constraint is not decoration. Broker client order id fields have limits, and an id
 that gets truncated server side stops being unique.
@@ -99,7 +99,7 @@ def decide(order: ManagedOrder, seconds_since_send: float, timeout: float) -> Ro
     """Given current state + how long we've waited, what should the router do next?
 
     Safety precedence: a filled-but-unprotected entry ALWAYS attaches its stop before
-    anything else. Never assume an unacked order's fate — query the broker."""
+    anything else. Never assume an unacked order's fate: query the broker."""
     st = order.state
 
     # naked-risk guard wins over everything
@@ -125,3 +125,21 @@ allowed to happen while it is true.
 
 Because `decide` is a pure function of state and elapsed time, every branch is directly
 testable, which is why `tests/test_order_fsm.py` exists and why none of it needs a broker.
+
+## How the router drives it
+
+The order path in the private repository (`aegis/router.py` and `aegis/execution.py`) uses the
+machine like this:
+
+1. The router derives the client order id from the bar, sleeve, instrument and side, and writes
+   the order to the journal in `PENDING_NEW` before any network call.
+2. If placing the order fails in transport, nothing is resent blindly. The router asks the broker
+   for that client order id. If the order landed, it is adopted (`RECONCILE_FOUND`). If not, it
+   goes back to `PENDING_NEW` and is resent once, with the same id.
+3. A rejection moves the order to `REJECTED`, raises a critical alarm and is never retried.
+4. Once an entry fills, `decide()` returns `ATTACH_STOP` until the protective stop is confirmed.
+   The router retries the stop a bounded number of times, and if it still fails it raises a
+   critical `NAKED_RISK` alarm.
+5. The journal row is updated with the final state and the broker's order id.
+
+The 16 tests for this module run in [`extract/tests/test_order_fsm.py`](../extract/tests/test_order_fsm.py).

@@ -17,6 +17,9 @@ trades or why.
 - The reconciliation algorithm, its safety ordering and its discrepancy taxonomy
 - The test tree: module names, counts and what each module covers
 - Code excerpts quoted from the private repository, chosen because they carry no strategy
+- Six infrastructure modules with 69 of their tests, runnable in `extract/`: the order state
+  machine, the reconciler, the intervention classifier, the live risk decisions, the audit
+  ledger and the durable store
 
 ## Never published, here or anywhere
 
@@ -35,3 +38,8 @@ private. If it only shows that the system is correct, recoverable and auditable,
 engineering and it is published.
 
 Where a document elides a value, it says so rather than quietly omitting it.
+
+The extract follows the same rule. Instrument names are placeholders (`COIN_A` and so on), the
+exchange is called `venue`, and the risk limits in its tests and the reconciler's default band
+are illustrative values, not the live configuration. The first two lines of each file list
+what changed.
